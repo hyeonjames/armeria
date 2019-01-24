@@ -215,6 +215,7 @@ abstract class HttpResponseDecoder {
                 }
             } else if (o instanceof HttpData) {
                 logBuilder.increaseResponseLength(((HttpData) o).length());
+                logBuilder.produceResponseContentPreview((HttpData)o);
             }
             return delegate.tryWrite(o);
         }

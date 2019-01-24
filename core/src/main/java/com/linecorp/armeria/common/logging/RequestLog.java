@@ -435,6 +435,12 @@ public interface RequestLog {
     Object requestContent();
 
     /**
+     * TODO: Add Javadocs.
+     */
+    @Nullable
+    String requestContentPreview();
+
+    /**
      * Returns the low-level content object of the {@link Request}, which is specific
      * to the {@link SerializationFormat}.
      *
@@ -462,6 +468,9 @@ public interface RequestLog {
      */
     @Nullable
     Object responseContent();
+
+    @Nullable
+    String responseContentPreview();
 
     /**
      * Returns the low-level content object of the {@link Response}, which is specific

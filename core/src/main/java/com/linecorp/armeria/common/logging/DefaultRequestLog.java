@@ -31,6 +31,7 @@ import static com.linecorp.armeria.common.logging.RequestLogAvailability.RESPONS
 import static com.linecorp.armeria.common.logging.RequestLogAvailability.SCHEME;
 import static java.util.Objects.requireNonNull;
 
+import java.io.InputStream;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -45,9 +46,11 @@ import javax.annotation.Nullable;
 
 import com.google.common.collect.ImmutableList;
 
+import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.RequestContext;
 import com.linecorp.armeria.common.RpcResponse;
 import com.linecorp.armeria.common.Scheme;
@@ -55,8 +58,11 @@ import com.linecorp.armeria.common.SerializationFormat;
 import com.linecorp.armeria.common.SessionProtocol;
 import com.linecorp.armeria.common.util.TextFormatter;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.util.internal.PlatformDependent;
+import it.unimi.dsi.fastutil.io.FastByteArrayInputStream;
 
 /**
  * Default {@link RequestLog} implementation.
@@ -125,9 +131,16 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     @Nullable
     private Object rawRequestContent;
     @Nullable
+    private Object responseContentPreview;
+    private ContentPreviewProducer requestContentPreviewProducer = ContentPreviewProducer.EMPTY_CONTENT;
+
+    @Nullable
     private Object responseContent;
     @Nullable
     private Object rawResponseContent;
+    @Nullable
+    private Object requestContentPreview;
+    private ContentPreviewProducer responseContentPreviewProducer = ContentPreviewProducer.EMPTY_CONTENT;
 
     private volatile int requestStrFlags = -1;
     private volatile int responseStrFlags = -1;
@@ -512,6 +525,31 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     }
 
     @Override
+    public String requestContentPreview() {
+        return requestContentPreview == null ? "" : requestContentPreview.toString();
+    }
+
+    @Override
+    public void produceRequestContentPreview(HttpData data) {
+        if (data.isEmpty()) {
+            return;
+        }
+        final ByteBuf buffer = Unpooled.wrappedBuffer(data.array(), 0, data.length()).asReadOnly();
+        if (requestContentPreview instanceof ByteBufAppendable) {
+            requestContentPreview = ((ByteBufAppendable) requestContentPreview).append(buffer);
+        } else {
+            requireNonNull(requestHeaders.contentType(), "requestHeaders.contentType");
+            requestContentPreview = requestContentPreviewProducer.produce(requestHeaders.contentType(),
+                                                                          buffer);
+        }
+    }
+
+    @Override
+    public void requestContentPreviewProducer(ContentPreviewProducer producer) {
+        requestContentPreviewProducer = producer;
+    }
+
+    @Override
     public Object rawRequestContent() {
         ensureAvailability(REQUEST_CONTENT);
         return rawRequestContent;
@@ -713,6 +751,32 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     }
 
     @Override
+    public String responseContentPreview() {
+        return responseContentPreview == null ? "" : responseContentPreview.toString();
+    }
+
+    @Override
+    public void produceResponseContentPreview(HttpData responseContent) {
+        if (responseContent.isEmpty()) {
+            return;
+        }
+        final ByteBuf buffer = Unpooled.wrappedBuffer(responseContent.array(), 0,
+                                                      responseContent.length()).asReadOnly();
+        if (responseContentPreview instanceof ByteBufAppendable) {
+            responseContentPreview = ((ByteBufAppendable)responseContentPreview).append(buffer);
+        } else {
+            final MediaType contentType = requireNonNull(responseHeaders.contentType());
+            responseContentPreview = responseContentPreviewProducer.produce(contentType,
+                                                                            buffer);
+        }
+    }
+
+    @Override
+    public void responseContentPreviewProducer(ContentPreviewProducer producer) {
+        responseContentPreviewProducer = producer;
+    }
+
+    @Override
     public Object rawResponseContent() {
         ensureAvailability(RESPONSE_CONTENT);
         return rawResponseContent;
@@ -774,7 +838,7 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     }
 
     private void updateAvailability(int flags) {
-        for (;;) {
+        for (; ;) {
             final int oldAvailability = this.flags;
             final int newAvailability = oldAvailability | flags;
             if (flagsUpdater.compareAndSet(this, oldAvailability, newAvailability)) {
@@ -905,6 +969,13 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
             if (isAvailable(flags, REQUEST_CONTENT) && requestContent != null) {
                 buf.append(", content=").append(contentSanitizer.apply(requestContent));
             }
+
+            if (isAvailable(flags, REQUEST_CONTENT)) {
+                final String contentPreview = requestContentPreview();
+                if (!contentPreview.isEmpty()) {
+                    buf.append(", content-preview=").append(contentPreview);
+                }
+            }
         }
         buf.append('}');
 
@@ -954,6 +1025,13 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
 
             if (isAvailable(flags, RESPONSE_CONTENT) && responseContent != null) {
                 buf.append(", content=").append(contentSanitizer.apply(responseContent));
+            }
+
+            if (isAvailable(flags, RESPONSE_CONTENT)) {
+                final String contentPreview = responseContentPreview();
+                if (!contentPreview.isEmpty()) {
+                    buf.append(", content-preview=").append(contentPreview);
+                }
             }
         }
         buf.append('}');

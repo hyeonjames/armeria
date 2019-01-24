@@ -544,6 +544,25 @@ public final class MediaType {
 
     public static final MediaType ZIP = createConstant(APPLICATION_TYPE, "zip");
 
+    private static final MediaType[] APPLICATION_TEXTABLE = {
+            JSON,
+            JSON_PATCH,
+            KML,
+            HAL_JSON,
+            FORM_DATA,
+            APPLE_MOBILE_CONFIG,
+            POSTSCRIPT,
+            ATOM_UTF_8,
+            JAVASCRIPT_UTF_8,
+            DART_UTF_8,
+            SOAP_XML_UTF_8,
+            APPLICATION_XML_UTF_8,
+            XHTML_UTF_8,
+            XRD_UTF_8,
+            RDF_XML_UTF_8,
+            MANIFEST_JSON_UTF_8
+    };
+
     private final String type;
     private final String subtype;
     private final ImmutableListMultimap<String, String> parameters;
@@ -764,6 +783,24 @@ public final class MediaType {
         return (mediaTypeRange.type.equals(WILDCARD) || mediaTypeRange.type.equals(type)) &&
                (mediaTypeRange.subtype.equals(WILDCARD) || mediaTypeRange.subtype.equals(subtype)) &&
                containsAllParameters(mediaTypeRange.parameters(), parameters());
+    }
+
+    /**
+     * TODO: Javadocs.
+     */
+    public boolean isTextable() {
+        if (charset().isPresent() || is(ANY_TEXT_TYPE)) {
+            return true;
+        }
+        if (!is(ANY_APPLICATION_TYPE)) {
+            return false;
+        }
+        for (MediaType textable : APPLICATION_TEXTABLE) {
+            if (is(textable)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

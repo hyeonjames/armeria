@@ -18,6 +18,7 @@ package com.linecorp.armeria.common.logging;
 
 import javax.annotation.Nullable;
 
+import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.Request;
 import com.linecorp.armeria.common.Response;
@@ -112,6 +113,16 @@ public interface RequestLogBuilder {
     void requestContent(@Nullable Object requestContent, @Nullable Object rawRequestContent);
 
     /**
+     * TODO: Add JAvadocs.
+     */
+    void produceRequestContentPreview(HttpData requestContent);
+
+    /**
+     * TODO: AddJavadocs.
+     */
+    void requestContentPreviewProducer(ContentPreviewProducer producer);
+
+    /**
      * Allows the {@link #requestContent(Object, Object)} called after {@link #endRequest()}.
      * By default, if {@link #requestContent(Object, Object)} was not called yet, {@link #endRequest()} will
      * call {@code requestContent(null, null)} automatically. This method turns off this default behavior.
@@ -167,6 +178,16 @@ public interface RequestLogBuilder {
      * Sets the {@link RequestLog#responseContent()} and the {@link RequestLog#rawResponseContent()}.
      */
     void responseContent(@Nullable Object responseContent, @Nullable Object rawResponseContent);
+
+    /**
+     * TODO: Add Javadocs.
+     */
+    void produceResponseContentPreview(HttpData responseContent);
+
+    /**
+     * TODO: Add Javadocs.
+     */
+    void responseContentPreviewProducer(ContentPreviewProducer producer);
 
     /**
      * Allows the {@link #responseContent(Object, Object)} called after {@link #endResponse()}.

@@ -32,6 +32,8 @@ import com.linecorp.armeria.common.HttpHeaders;
 public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<T>> {
     private static final Function<HttpHeaders, HttpHeaders> DEFAULT_HEADERS_SANITIZER = Function.identity();
     private static final Function<Object, Object> DEFAULT_CONTENT_SANITIZER = Function.identity();
+    private static final ContentPreviewProducer DEFAULT_CONTENT_PREVIEW_FORMATTER =
+            ContentPreviewProducer.of();
 
     private LogLevel requestLogLevel = LogLevel.TRACE;
     private LogLevel successfulResponseLogLevel = LogLevel.TRACE;
@@ -41,6 +43,8 @@ public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<
     private Function<HttpHeaders, HttpHeaders> responseHeadersSanitizer = DEFAULT_HEADERS_SANITIZER;
     private Function<Object, Object> responseContentSanitizer = DEFAULT_CONTENT_SANITIZER;
     private float samplingRate = 1.0f;
+    private ContentPreviewProducer requestContentPreviewProducer = DEFAULT_CONTENT_PREVIEW_FORMATTER;
+    private ContentPreviewProducer responseContentPreviewProducer = DEFAULT_CONTENT_PREVIEW_FORMATTER;
 
     /**
      * Sets the {@link LogLevel} to use when logging requests. If unset, will use {@link LogLevel#TRACE}.
@@ -125,6 +129,28 @@ public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<
     }
 
     /**
+     * TODO: Add Javadocs.
+     */
+    public T requestContentPreviewFormatter(ContentPreviewProducer formatter) {
+        requireNonNull(formatter, "formatter");
+        requestContentPreviewProducer = formatter;
+        return unsafeCast(this);
+    }
+
+    protected ContentPreviewProducer requestContentPreviewFormatter() {
+        return requestContentPreviewProducer;
+    }
+
+    public T requestContentPreview(int start, int end) {
+        //return requestContentPreviewFormatter(ContentPreviewProducer.of(start, end));
+        return unsafeCast(this);
+    }
+
+    public T requestContentPreview(int length) {
+        return requestContentPreview(0, length);
+    }
+
+    /**
      * Sets the {@link Function} to use to sanitize response headers before logging. It is common to have the
      * {@link Function} remove sensitive headers, like {@code Set-Cookie}, before logging. If unset,
      * will use {@link Function#identity()}.
@@ -176,6 +202,28 @@ public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<
         return samplingRate;
     }
 
+    /**
+     * TODO: Add javadocs.
+     */
+    public T responseContentPreviewFormatter(ContentPreviewProducer formatter) {
+        requireNonNull(formatter, "formatter");
+        this.responseContentPreviewProducer = formatter;
+        return unsafeCast(this);
+    }
+
+    protected ContentPreviewProducer responseContentPreviewFormatter() {
+        return responseContentPreviewProducer;
+    }
+
+    public T responseContentPreview(int start, int end) {
+        //return responseContentPreviewFormatter(ContentPreviewProducer.of(start, end));
+        return unsafeCast(this);
+    }
+
+    public T responseContentPreview(int length) {
+        return responseContentPreview(0, length);
+    }
+
     @SuppressWarnings("unchecked")
     private T unsafeCast(LoggingDecoratorBuilder<T> self) {
         return (T) self;
@@ -185,7 +233,8 @@ public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<
     public String toString() {
         return toString(this, requestLogLevel, successfulResponseLogLevel, failedResponseLogLevel,
                         requestHeadersSanitizer, requestContentSanitizer, responseHeadersSanitizer,
-                        responseContentSanitizer, samplingRate);
+                        responseContentSanitizer, samplingRate, requestContentPreviewProducer,
+                        responseContentPreviewProducer);
     }
 
     private static <T extends LoggingDecoratorBuilder<T>> String toString(
@@ -197,7 +246,9 @@ public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<
             Function<Object, Object> requestContentSanitizer,
             Function<HttpHeaders, HttpHeaders> responseHeadersSanitizer,
             Function<Object, Object> responseContentSanitizer,
-            float samplingRate) {
+            float samplingRate,
+            ContentPreviewProducer requestContentPreviewProducer,
+            ContentPreviewProducer responseContentPreviewProducer) {
         final ToStringHelper helper = MoreObjects.toStringHelper(self)
                                                  .add("requestLogLevel", requestLogLevel)
                                                  .add("successfulResponseLogLevel", successfulResponseLogLevel)
@@ -214,6 +265,12 @@ public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<
         }
         if (responseContentSanitizer != DEFAULT_CONTENT_SANITIZER) {
             helper.add("responseContentSanitizer", responseContentSanitizer);
+        }
+        if (requestContentPreviewProducer != DEFAULT_CONTENT_PREVIEW_FORMATTER) {
+            helper.add("requestContentPreviewProducer", requestContentPreviewProducer);
+        }
+        if (responseContentPreviewProducer != DEFAULT_CONTENT_PREVIEW_FORMATTER) {
+            helper.add("responseContentPreviewProducer", responseContentPreviewProducer);
         }
         return helper.toString();
     }
