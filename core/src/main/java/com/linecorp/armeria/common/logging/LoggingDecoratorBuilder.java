@@ -21,6 +21,8 @@ import static java.util.Objects.requireNonNull;
 
 import java.util.function.Function;
 
+import javax.swing.text.AbstractDocument.Content;
+
 import com.google.common.base.MoreObjects;
 import com.google.common.base.MoreObjects.ToStringHelper;
 
@@ -41,6 +43,8 @@ public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<
     private Function<HttpHeaders, HttpHeaders> responseHeadersSanitizer = DEFAULT_HEADERS_SANITIZER;
     private Function<Object, Object> responseContentSanitizer = DEFAULT_CONTENT_SANITIZER;
     private float samplingRate = 1.0f;
+    private ContentPreviewWriter requestContentPreviewWriter;
+    private ContentPreviewWriter responseContentPreviewWriter;
 
     /**
      * Sets the {@link LogLevel} to use when logging requests. If unset, will use {@link LogLevel#TRACE}.
@@ -124,6 +128,15 @@ public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<
         return requestContentSanitizer;
     }
 
+    public T requestContentPreviewWriter(ContentPreviewWriter previewWriter) {
+        requestContentPreviewWriter = previewWriter;
+        return unsafeCast(this);
+    }
+
+    protected ContentPreviewWriter requestContentPreviewWriter() {
+        return requestContentPreviewWriter;
+    }
+
     /**
      * Sets the {@link Function} to use to sanitize response headers before logging. It is common to have the
      * {@link Function} remove sensitive headers, like {@code Set-Cookie}, before logging. If unset,
@@ -156,6 +169,15 @@ public abstract class LoggingDecoratorBuilder<T extends LoggingDecoratorBuilder<
      */
     protected Function<Object, Object> responseContentSanitizer() {
         return responseContentSanitizer;
+    }
+
+    public T responseContentPreviewWriter(ContentPreviewWriter previewWriter) {
+        responseContentPreviewWriter = previewWriter;
+        return unsafeCast(this);
+    }
+
+    protected ContentPreviewWriter responseContentPreviewWriter() {
+        return responseContentPreviewWriter;
     }
 
     /**

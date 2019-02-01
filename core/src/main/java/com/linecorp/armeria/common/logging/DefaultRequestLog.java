@@ -46,6 +46,7 @@ import javax.net.ssl.SSLSession;
 
 import com.google.common.collect.ImmutableList;
 
+import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpStatus;
@@ -100,6 +101,8 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     private long requestFirstBytesTransferredTimeNanos;
     private long requestEndTimeNanos;
     private long requestLength;
+    private ContentPreviewWriter requestContentPreviewWriter = ContentPreviewWriter.EMPTY;
+    private String requestContentPreview;
     @Nullable
     private Throwable requestCause;
 
@@ -108,6 +111,8 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     private long responseFirstBytesTransferredTimeNanos;
     private long responseEndTimeNanos;
     private long responseLength;
+    private ContentPreviewWriter responseContentPreviewWriter = ContentPreviewWriter.EMPTY;
+    private String responseContentPreview;
     @Nullable
     private Throwable responseCause;
 
@@ -526,6 +531,18 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         updateAvailability(REQUEST_CONTENT);
     }
 
+    public void writeRequestContentPreview(HttpData data) {
+        requestContentPreviewWriter.write(requestHeaders, data);
+    }
+
+    public void requestContentPreviewWriter(ContentPreviewWriter writer) {
+        requestContentPreviewWriter = writer;
+    }
+
+    public String requestContentPreview() {
+        return requestContentPreview;
+    }
+
     @Override
     public Object rawRequestContent() {
         ensureAvailability(REQUEST_CONTENT);
@@ -575,6 +592,8 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         if (isAvailable(flags)) {
             return;
         }
+
+        requestContentPreview = requestContentPreviewWriter.produce();
 
         // if the request is not started yet, call startRequest() with requestEndTimeNanos so that
         // totalRequestDuration will be 0
@@ -750,6 +769,18 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         updateAvailability(RESPONSE_CONTENT);
     }
 
+    public void responseContentPreviewWriter(ContentPreviewWriter writer) {
+        responseContentPreviewWriter = writer;
+    }
+
+    public void writeResponseContentPreview(HttpData data) {
+        responseContentPreviewWriter.write(responseHeaders, data);
+    }
+
+    public String responseContentPreview() {
+        return responseContentPreview;
+    }
+
     @Override
     public Object rawResponseContent() {
         ensureAvailability(RESPONSE_CONTENT);
@@ -799,6 +830,8 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         if (isAvailable(flags)) {
             return;
         }
+
+        responseContentPreview = responseContentPreviewWriter.produce();
 
         // if the response is not started yet, call startResponse() with responseEndTimeNanos so that
         // totalResponseDuration will be 0
