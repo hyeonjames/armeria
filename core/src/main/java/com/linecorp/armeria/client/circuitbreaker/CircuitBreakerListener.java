@@ -24,15 +24,15 @@ public interface CircuitBreakerListener {
     /**
      * Invoked when the circuit state is changed.
      */
-    void onStateChanged(CircuitBreaker circuitBreaker, CircuitState state) throws Exception;
+    void onStateChanged(String circuitBreakerName, CircuitState state) throws Exception;
 
     /**
      * Invoked when the circuit breaker's internal {@link EventCount} is updated.
      */
-    void onEventCountUpdated(CircuitBreaker circuitBreaker, EventCount eventCount) throws Exception;
+    void onEventCountUpdated(String circuitBreakerName, EventCount eventCount) throws Exception;
 
     /**
      * Invoked when the circuit breaker rejects a request.
      */
-    void onRequestRejected(CircuitBreaker circuitBreaker) throws Exception;
+    void onRequestRejected(String circuitBreakerName) throws Exception;
 }

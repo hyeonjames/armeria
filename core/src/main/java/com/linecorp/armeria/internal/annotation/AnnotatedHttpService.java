@@ -16,6 +16,7 @@
 
 package com.linecorp.armeria.internal.annotation;
 
+import static com.linecorp.armeria.internal.ObjectCollectingUtil.collectFrom;
 import static com.linecorp.armeria.internal.annotation.AnnotatedValueResolver.AggregationStrategy.aggregationRequired;
 import static com.linecorp.armeria.internal.annotation.AnnotatedValueResolver.toArguments;
 import static java.util.Objects.requireNonNull;
@@ -24,11 +25,11 @@ import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.List;
-import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import javax.annotation.Nullable;
 
@@ -48,13 +49,13 @@ import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpObject;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpResponseWriter;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.RequestContext;
 import com.linecorp.armeria.common.util.Exceptions;
 import com.linecorp.armeria.common.util.SafeCloseable;
 import com.linecorp.armeria.internal.FallthroughException;
-import com.linecorp.armeria.internal.PublisherToHttpResponseConverter;
 import com.linecorp.armeria.internal.annotation.AnnotatedValueResolver.AggregationStrategy;
 import com.linecorp.armeria.internal.annotation.AnnotatedValueResolver.ResolverContext;
 import com.linecorp.armeria.server.HttpResponseException;
@@ -104,6 +105,7 @@ public class AnnotatedHttpService implements HttpService {
 
     private final PathMapping pathMapping;
     private final HttpHeaders defaultHttpHeaders;
+    private final HttpHeaders defaultHttpTrailers;
 
     private final ResponseType responseType;
 
@@ -112,7 +114,8 @@ public class AnnotatedHttpService implements HttpService {
                          List<ExceptionHandlerFunction> exceptionHandlers,
                          List<ResponseConverterFunction> responseConverters,
                          PathMapping pathMapping,
-                         Optional<HttpStatus> defaultResponseStatus) {
+                         HttpHeaders defaultHttpHeaders,
+                         HttpHeaders defaultHttpTrailers) {
         this.object = requireNonNull(object, "object");
         this.method = requireNonNull(method, "method");
         this.resolvers = requireNonNull(resolvers, "resolvers");
@@ -124,9 +127,8 @@ public class AnnotatedHttpService implements HttpService {
         aggregationStrategy = AggregationStrategy.from(resolvers);
         this.pathMapping = requireNonNull(pathMapping, "pathMapping");
 
-        defaultHttpHeaders = HttpHeaders.of(defaultResponseStatus(
-                requireNonNull(defaultResponseStatus, "defaultResponseStatus"), method)).asImmutable();
-
+        this.defaultHttpHeaders = requireNonNull(defaultHttpHeaders, "defaultHttpHeaders").asImmutable();
+        this.defaultHttpTrailers = requireNonNull(defaultHttpTrailers, "defaultHttpTrailers").asImmutable();
         final Class<?> returnType = method.getReturnType();
         if (HttpResponse.class.isAssignableFrom(returnType)) {
             responseType = ResponseType.HTTP_RESPONSE;
@@ -157,12 +159,11 @@ public class AnnotatedHttpService implements HttpService {
                                                         .build();
         final ResponseConverterFunction responseConverter = new CompositeResponseConverterFunction(
                 new Builder<ResponseConverterFunction>()
-                        .addAll(responseConverters)
-                        // Just in case a user specifies a response converter for 'Publisher' type,
-                        // we add the default implementation behind user-specified converters.
-                        .add(new PublisherResponseConverterFunction(
+                        .addAll(backingConverters)
+                        // It is the last converter to try to convert the result object into an HttpResponse
+                        // after aggregating the published object from a Publisher or Stream.
+                        .add(new AggregatedResponseConverterFunction(
                                 new CompositeResponseConverterFunction(backingConverters), exceptionHandler))
-                        .addAll(defaultResponseConverters)
                         .build());
 
         for (final ResponseConverterFunctionProvider provider : responseConverterFunctionProviders) {
@@ -189,16 +190,6 @@ public class AnnotatedHttpService implements HttpService {
                 }
             }
         }
-    }
-
-    private static HttpStatus defaultResponseStatus(Optional<HttpStatus> defaultResponseStatus,
-                                                    Method method) {
-        return defaultResponseStatus.orElseGet(() -> {
-            // Set a default HTTP status code for a response depending on the return type of the method.
-            final Class<?> returnType = method.getReturnType();
-            return returnType == Void.class ||
-                   returnType == void.class ? HttpStatus.NO_CONTENT : HttpStatus.OK;
-        });
     }
 
     Object object() {
@@ -231,6 +222,10 @@ public class AnnotatedHttpService implements HttpService {
         final CompletableFuture<AggregatedHttpMessage> f =
                 aggregationRequired(aggregationStrategy, req) ? req.aggregate()
                                                               : CompletableFuture.completedFuture(null);
+
+        ctx.setAdditionalResponseHeaders(defaultHttpHeaders);
+        ctx.setAdditionalResponseTrailers(defaultHttpTrailers);
+
         switch (responseType) {
             case HTTP_RESPONSE:
                 return f.thenApply(
@@ -276,7 +271,9 @@ public class AnnotatedHttpService implements HttpService {
             result = httpResult.content().orElse(null);
             newTrailingHeaders = httpResult.trailingHeaders();
         } else {
-            newHeaders = headers == null ? addNegotiatedResponseMediaType(ctx, defaultHttpHeaders) : headers;
+            newHeaders = setHttpStatus(
+                    headers == null ? addNegotiatedResponseMediaType(ctx, HttpHeaders.EMPTY_HEADERS)
+                                    : headers);
             newTrailingHeaders = trailingHeaders;
         }
 
@@ -295,7 +292,14 @@ public class AnnotatedHttpService implements HttpService {
         }
 
         try {
-            return responseConverter.convertResponse(ctx, newHeaders, result, newTrailingHeaders);
+            final HttpResponse response =
+                    responseConverter.convertResponse(ctx, newHeaders, result, newTrailingHeaders);
+            if (response instanceof HttpResponseWriter) {
+                // A streaming response has more chance to get an exception.
+                return new ExceptionFilteredHttpResponse(ctx, req, response, exceptionHandler);
+            } else {
+                return response;
+            }
         } catch (Exception cause) {
             return exceptionHandler.handleException(ctx, req, cause);
         }
@@ -444,7 +448,7 @@ public class AnnotatedHttpService implements HttpService {
                 return HttpResponse.of(headers, HttpData.EMPTY_DATA, trailingHeaders);
             }
             throw new IllegalStateException(
-                    "No response converter exists for a result: " + result.getClass().getSimpleName());
+                    "No response converter exists for a result: " + result.getClass().getName());
         }
     }
 
@@ -497,34 +501,45 @@ public class AnnotatedHttpService implements HttpService {
 
     /**
      * A response converter implementation which creates an {@link HttpResponse} with
-     * the objects produced by a {@link Publisher}.
+     * the objects published from a {@link Publisher} or {@link Stream}.
      */
-    private static final class PublisherResponseConverterFunction implements ResponseConverterFunction {
+    private static final class AggregatedResponseConverterFunction implements ResponseConverterFunction {
 
         private final ResponseConverterFunction responseConverter;
         private final ExceptionHandlerFunction exceptionHandler;
 
-        PublisherResponseConverterFunction(ResponseConverterFunction responseConverter,
-                                           ExceptionHandlerFunction exceptionHandler) {
+        AggregatedResponseConverterFunction(ResponseConverterFunction responseConverter,
+                                            ExceptionHandlerFunction exceptionHandler) {
             this.responseConverter = responseConverter;
             this.exceptionHandler = exceptionHandler;
         }
 
         @Override
+        @SuppressWarnings("unchecked")
         public HttpResponse convertResponse(ServiceRequestContext ctx,
                                             HttpHeaders headers,
                                             @Nullable Object result,
                                             HttpHeaders trailingHeaders) throws Exception {
+            final CompletableFuture<?> f;
             if (result instanceof Publisher) {
-                final CompletableFuture<HttpResponse> future = new CompletableFuture<>();
-                final Publisher<?> publisher = (Publisher<?>) result;
-                publisher.subscribe(
-                        new PublisherToHttpResponseConverter(ctx, ctx.request(), headers, trailingHeaders,
-                                                             future, responseConverter, exceptionHandler));
-                return HttpResponse.from(future);
+                f = collectFrom((Publisher<Object>) result);
+            } else if (result instanceof Stream) {
+                f = collectFrom((Stream<Object>) result, ctx.blockingTaskExecutor());
+            } else {
+                return ResponseConverterFunction.fallthrough();
             }
 
-            return ResponseConverterFunction.fallthrough();
+            assert f != null;
+            return HttpResponse.from(f.handle((aggregated, cause) -> {
+                if (cause != null) {
+                    return exceptionHandler.handleException(ctx, ctx.request(), cause);
+                }
+                try {
+                    return responseConverter.convertResponse(ctx, headers, aggregated, trailingHeaders);
+                } catch (Exception e) {
+                    return exceptionHandler.handleException(ctx, ctx.request(), e);
+                }
+            }));
         }
     }
 

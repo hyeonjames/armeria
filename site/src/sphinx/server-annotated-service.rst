@@ -1,8 +1,13 @@
-.. _server-annotated-service:
 .. _Publisher: https://www.reactive-streams.org/reactive-streams-1.0.2-javadoc/org/reactivestreams/Publisher.html
 
-Annotated HTTP Service
-======================
+.. _server-annotated-service:
+
+Annotated services
+==================
+
+.. note::
+
+    Visit `armeria-examples <https://github.com/line/armeria-examples>`_ to find a fully working example.
 
 Armeria provides a way to write an HTTP service using annotations. It helps a user make his or her code
 simple and easy to understand. A user is able to run an HTTP service by fewer lines of code using
@@ -125,7 +130,6 @@ you can use :api:`@StatusCode` annotation as follows.
         @Delete("/users/{name}")
         public void deleteUser(@Param("name") String name) { ... }
     }
-
 
 .. _parameter-injection:
 
@@ -454,7 +458,7 @@ converter is not able to convert the request.
                                      Class<?> expectedResultType) {
             if (expectedResultType == Greeting.class) {
                 // Convert the request to a Java object.
-                return new Greeting(translateToEnglish(request.content().toStringUtf8()));
+                return new Greeting(translateToEnglish(request.contentUtf8()));
             }
 
             // To the next request converter.
@@ -1143,13 +1147,13 @@ You can annotate them with :api:`@Consumes` annotation.
         @Post("/hello")
         @Consumes("text/plain")
         public HttpResponse helloText(AggregatedHttpMessage message) {
-            // Get a text content by calling message.content().toStringAscii().
+            // Get a text content by calling message.contentAscii().
         }
 
         @Post("/hello")
         @Consumes("application/json")
         public HttpResponse helloJson(AggregatedHttpMessage message) {
-            // Get a JSON object by calling message.content().toStringUtf8().
+            // Get a JSON object by calling message.contentUtf8().
         }
     }
 
@@ -1191,7 +1195,7 @@ as follows. ``helloCatchAll()`` method would accept every request except for the
         @Post("/hello")
         @Consumes("application/json")
         public HttpResponse helloJson(AggregatedHttpMessage message) {
-            // Get a JSON object by calling message.content().toStringUtf8().
+            // Get a JSON object by calling message.contentUtf8().
         }
     }
 
@@ -1231,3 +1235,59 @@ Then, you can annotate your service method with your annotation as follows.
         @MyProducibleType  // the same as @Produces("application/xml")
         public MyResponse hello(MyRequest myRequest) { ... }
     }
+
+
+Specifying additional response headers/trailers
+-----------------------------------------------
+
+Armeria provides a way to configure additional headers/trailers via annotation,
+:api:`@AdditionalHeader` for HTTP headers and :api:`@AdditionalTrailer` for HTTP trailers.
+
+You can annotate your service method with the annotations as follows.
+
+.. code-block:: java
+
+    import com.linecorp.armeria.server.annotation.AdditionalHeader;
+    import com.linecorp.armeria.server.annotation.AdditionalTrailer;
+
+    @AdditionalHeader(name = "custom-header", value = "custom-value")
+    @AdditionalTrailer(name = "custom-trailer", value = "custom-value")
+    public class MyAnnotatedService {
+        @Get("/hello")
+        @AdditionalHeader(name = "custom-header-2", value = "custom-value")
+        @AdditionalTrailer(name = "custom-trailer-2", value = "custom-value")
+        public HttpResponse hello() { ... }
+    }
+
+The :api:`@AdditionalHeader` or :api:`@AdditionalTrailer` specified at the method level takes precedence over
+what's specified at the class level if it has the same name, e.g.
+
+.. code-block:: java
+
+    @AdditionalHeader(name = "custom-header", value = "custom-value")
+    @AdditionalTrailer(name = "custom-trailer", value = "custom-value")
+    public class MyAnnotatedService {
+        @Get("/hello")
+        @AdditionalHeader(name = "custom-header", value = "custom-overwritten")
+        @AdditionalTrailer(name = "custom-trailer", value = "custom-overwritten")
+        public HttpResponse hello() { ... }
+    }
+
+In this case, the values of the HTTP header named ``custom-header`` and the HTTP trailer named
+``custom-trailer`` will be ``custom-overwritten``, not ``custom-value``.
+
+Note that the trailers will not be injected into the responses with the following HTTP status code,
+because they always have an empty content.
+
++--------------+----------------+
+| Status code  | Description    |
++==============+================+
+| 1xx          | Informational  |
++--------------+----------------+
+| 204          | No content     |
++--------------+----------------+
+| 205          | Reset content  |
++--------------+----------------+
+| 304          | Not modified   |
++--------------+----------------+
+

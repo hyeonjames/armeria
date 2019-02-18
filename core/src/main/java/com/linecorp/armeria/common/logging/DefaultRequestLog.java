@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Function;
 
 import javax.annotation.Nullable;
+import javax.net.ssl.SSLSession;
 
 import com.google.common.collect.ImmutableList;
 
@@ -113,10 +114,10 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     @Nullable
     private Channel channel;
     @Nullable
+    private SSLSession sslSession;
+    @Nullable
     private SessionProtocol sessionProtocol;
     private SerializationFormat serializationFormat = SerializationFormat.NONE;
-    @Nullable
-    private String host;
 
     private HttpHeaders requestHeaders = DUMMY_REQUEST_HEADERS_HTTP;
     private HttpHeaders responseHeaders = DUMMY_RESPONSE_HEADERS;
@@ -156,22 +157,18 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     }
 
     private void propagateRequestSideLog(RequestLog child) {
-        child.addListener(log -> {
-            startRequest0(log.requestStartTimeNanos(), log.requestStartTimeMicros(), log.channel(),
-                          log.sessionProtocol(), true);
-        }, REQUEST_START);
+        child.addListener(log -> startRequest0(log.channel(), log.sessionProtocol(), null,
+                                               log.requestStartTimeNanos(), log.requestStartTimeMicros(), true),
+                          REQUEST_START);
         child.addListener(log -> serializationFormat(log.serializationFormat()), SCHEME);
-        child.addListener(log -> requestFirstBytesTransferred(
-                log.requestFirstBytesTransferredTimeNanos()), REQUEST_FIRST_BYTES_TRANSFERRED);
+        child.addListener(log -> requestFirstBytesTransferred(log.requestFirstBytesTransferredTimeNanos()),
+                          REQUEST_FIRST_BYTES_TRANSFERRED);
         child.addListener(log -> requestHeaders(log.requestHeaders()), REQUEST_HEADERS);
         child.addListener(log -> requestContent(log.requestContent(), log.rawRequestContent()),
                           REQUEST_CONTENT);
         child.addListener(log -> {
-            if (log.requestCause() != null) {
-                endRequest0(log.requestEndTimeNanos(), log.requestCause());
-            } else {
-                endRequest0(log.requestEndTimeNanos(), null);
-            }
+            requestLength(log.requestLength());
+            endRequest0(log.requestCause(), log.requestEndTimeNanos());
         }, REQUEST_END);
     }
 
@@ -203,7 +200,8 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         }
 
         if (lastChild.isAvailable(RESPONSE_END)) {
-            endResponseFrom(lastChild);
+            responseLength(lastChild.responseLength());
+            endResponse0(lastChild.responseCause(), lastChild.responseEndTimeNanos());
         }
 
         lastChild.addListener(log -> startResponse0(
@@ -213,15 +211,10 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         lastChild.addListener(log -> responseHeaders(log.responseHeaders()), RESPONSE_HEADERS);
         lastChild.addListener(log -> responseContent(
                 log.responseContent(), log.rawResponseContent()), RESPONSE_CONTENT);
-        lastChild.addListener(this::endResponseFrom, RESPONSE_END);
-    }
-
-    private void endResponseFrom(RequestLog log) {
-        if (log.responseCause() != null) {
-            endResponse0(log.responseEndTimeNanos(), log.responseCause());
-        } else {
-            endResponse0(log.responseEndTimeNanos(), null);
-        }
+        lastChild.addListener(log -> {
+            responseLength(lastChild.responseLength());
+            endResponse0(log.responseCause(), log.responseEndTimeNanos());
+        }, RESPONSE_END);
     }
 
     @Override
@@ -325,19 +318,32 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     }
 
     @Override
-    public void startRequest(Channel channel, SessionProtocol sessionProtocol) {
+    public void startRequest(Channel channel, SessionProtocol sessionProtocol,
+                             @Nullable SSLSession sslSession) {
         requireNonNull(channel, "channel");
         requireNonNull(sessionProtocol, "sessionProtocol");
-        startRequest0(channel, sessionProtocol, true);
+        startRequest0(channel, sessionProtocol, sslSession, true);
     }
 
-    private void startRequest0(Channel channel, SessionProtocol sessionProtocol, boolean updateAvailability) {
-        startRequest0(System.nanoTime(), currentTimeMicros(), channel, sessionProtocol, updateAvailability);
+    @Override
+    public void startRequest(Channel channel, SessionProtocol sessionProtocol, @Nullable SSLSession sslSession,
+                             long requestStartTimeNanos, long requestStartTimeMicros) {
+        requireNonNull(channel, "channel");
+        requireNonNull(sessionProtocol, "sessionProtocol");
+        startRequest0(channel, sessionProtocol, sslSession,
+                      requestStartTimeNanos, requestStartTimeMicros, true);
     }
 
-    private void startRequest0(long requestStartTimeNanos, long requestStartTimeMicros,
-                               @Nullable Channel channel, SessionProtocol sessionProtocol,
-                               boolean updateAvailability) {
+    private void startRequest0(Channel channel, SessionProtocol sessionProtocol,
+                               @Nullable SSLSession sslSession, boolean updateAvailability) {
+        startRequest0(channel, sessionProtocol, sslSession,
+                      System.nanoTime(), currentTimeMicros(),
+                      updateAvailability);
+    }
+
+    private void startRequest0(@Nullable Channel channel, SessionProtocol sessionProtocol,
+                               @Nullable SSLSession sslSession, long requestStartTimeNanos,
+                               long requestStartTimeMicros, boolean updateAvailability) {
         if (isAvailabilityAlreadyUpdated(REQUEST_START)) {
             return;
         }
@@ -345,6 +351,7 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         this.requestStartTimeNanos = requestStartTimeNanos;
         this.requestStartTimeMicros = requestStartTimeMicros;
         this.channel = channel;
+        this.sslSession = sslSession;
         this.sessionProtocol = sessionProtocol;
         if (sessionProtocol.isTls()) {
             // Switch to the dummy headers with ':scheme=https' if the connection is TLS.
@@ -406,6 +413,12 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     }
 
     @Override
+    public SSLSession sslSession() {
+        ensureAvailability(REQUEST_START);
+        return sslSession;
+    }
+
+    @Override
     public SessionProtocol sessionProtocol() {
         ensureAvailability(REQUEST_START);
         return sessionProtocol;
@@ -452,17 +465,25 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         this.requestLength = requestLength;
     }
 
-    private void requestFirstBytesTransferred(long timestamp) {
+    @Override
+    public void requestFirstBytesTransferred() {
         if (isAvailabilityAlreadyUpdated(REQUEST_FIRST_BYTES_TRANSFERRED)) {
             return;
         }
-        requestFirstBytesTransferredTimeNanos = timestamp;
-        updateAvailability(REQUEST_FIRST_BYTES_TRANSFERRED);
+        requestFirstBytesTransferred0(System.nanoTime());
     }
 
     @Override
-    public void requestFirstBytesTransferred() {
-        requestFirstBytesTransferred(System.nanoTime());
+    public void requestFirstBytesTransferred(long requestFirstBytesTransferredTimeNanos) {
+        if (isAvailabilityAlreadyUpdated(REQUEST_FIRST_BYTES_TRANSFERRED)) {
+            return;
+        }
+        requestFirstBytesTransferred0(requestFirstBytesTransferredTimeNanos);
+    }
+
+    private void requestFirstBytesTransferred0(long requestFirstBytesTransferredTimeNanos) {
+        this.requestFirstBytesTransferredTimeNanos = requestFirstBytesTransferredTimeNanos;
+        updateAvailability(REQUEST_FIRST_BYTES_TRANSFERRED);
     }
 
     @Override
@@ -540,11 +561,21 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         endRequest0(requireNonNull(requestCause, "requestCause"));
     }
 
-    private void endRequest0(@Nullable Throwable requestCause) {
-        endRequest0(System.nanoTime(), requestCause);
+    @Override
+    public void endRequest(long requestEndTimeNanos) {
+        endRequest0(null, requestEndTimeNanos);
     }
 
-    private void endRequest0(long requestEndTimeNanos, @Nullable Throwable requestCause) {
+    @Override
+    public void endRequest(Throwable requestCause, long requestEndTimeNanos) {
+        endRequest0(requireNonNull(requestCause, "requestCause"), requestEndTimeNanos);
+    }
+
+    private void endRequest0(@Nullable Throwable requestCause) {
+        endRequest0(requestCause, System.nanoTime());
+    }
+
+    private void endRequest0(@Nullable Throwable requestCause, long requestEndTimeNanos) {
         final int flags = requestCause == null && requestContentDeferred ? FLAGS_REQUEST_END_WITHOUT_CONTENT
                                                                          : REQUEST_END.setterFlags();
         if (isAvailable(flags)) {
@@ -553,8 +584,8 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
 
         // if the request is not started yet, call startRequest() with requestEndTimeNanos so that
         // totalRequestDuration will be 0
-        startRequest0(requestEndTimeNanos, currentTimeMicros(), null,
-                      context().sessionProtocol(), false);
+        startRequest0(null, context().sessionProtocol(), null,
+                      requestEndTimeNanos, currentTimeMicros(), false);
 
         this.requestEndTimeNanos = requestEndTimeNanos;
         this.requestCause = requestCause;
@@ -564,6 +595,11 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     @Override
     public void startResponse() {
         startResponse0(true);
+    }
+
+    @Override
+    public void startResponse(long responseStartTimeNanos, long responseStartTimeMicros) {
+        startResponse0(responseStartTimeNanos, responseStartTimeMicros, true);
     }
 
     private void startResponse0(boolean updateAvailability) {
@@ -643,17 +679,25 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         this.responseLength = responseLength;
     }
 
-    private void responseFirstBytesTransferred(long timestamp) {
+    @Override
+    public void responseFirstBytesTransferred() {
         if (isAvailabilityAlreadyUpdated(RESPONSE_FIRST_BYTES_TRANSFERRED)) {
             return;
         }
-        responseFirstBytesTransferredTimeNanos = timestamp;
-        updateAvailability(RESPONSE_FIRST_BYTES_TRANSFERRED);
+        responseFirstBytesTransferred0(System.nanoTime());
     }
 
     @Override
-    public void responseFirstBytesTransferred() {
-        responseFirstBytesTransferred(System.nanoTime());
+    public void responseFirstBytesTransferred(long responseFirstBytesTransferredTimeNanos) {
+        if (isAvailabilityAlreadyUpdated(RESPONSE_FIRST_BYTES_TRANSFERRED)) {
+            return;
+        }
+        responseFirstBytesTransferred0(responseFirstBytesTransferredTimeNanos);
+    }
+
+    private void responseFirstBytesTransferred0(long responseFirstBytesTransferredTimeNanos) {
+        this.responseFirstBytesTransferredTimeNanos = responseFirstBytesTransferredTimeNanos;
+        updateAvailability(RESPONSE_FIRST_BYTES_TRANSFERRED);
     }
 
     @Override
@@ -741,11 +785,21 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         endResponse0(requireNonNull(responseCause, "responseCause"));
     }
 
-    private void endResponse0(@Nullable Throwable responseCause) {
-        endResponse0(System.nanoTime(), responseCause);
+    @Override
+    public void endResponse(long responseEndTimeNanos) {
+        endResponse0(null, responseEndTimeNanos);
     }
 
-    private void endResponse0(long responseEndTimeNanos, @Nullable Throwable responseCause) {
+    @Override
+    public void endResponse(Throwable responseCause, long responseEndTimeNanos) {
+        endResponse0(requireNonNull(responseCause, "responseCause"), responseEndTimeNanos);
+    }
+
+    private void endResponse0(@Nullable Throwable responseCause) {
+        endResponse0(responseCause, System.nanoTime());
+    }
+
+    private void endResponse0(@Nullable Throwable responseCause, long responseEndTimeNanos) {
         final int flags = responseCause == null && responseContentDeferred ? FLAGS_RESPONSE_END_WITHOUT_CONTENT
                                                                            : RESPONSE_END.setterFlags();
         if (isAvailable(flags)) {
@@ -843,17 +897,18 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
            .append(", res=") // 6 chars
            .append(res)
            .append('}');     // 1 char
-        if (children != null && children.size() > 1) {
-            buf.append(", {totalAttempts=");
-            buf.append(children.size());
-            buf.append("}[");
-            for (int i = 0; i < children.size(); i++) {
+        final int numChildren = children != null ? children.size() : 0;
+        if (numChildren > 0) {
+            buf.append(", {");
+            for (int i = 0; i < numChildren; i++) {
+                buf.append('[');
                 buf.append(children.get(i));
-                if (i != children.size() - 1) {
+                buf.append(']');
+                if (i != numChildren - 1) {
                     buf.append(", ");
                 }
             }
-            buf.append(']');
+            buf.append('}');
         }
         return buf.toString();
     }
@@ -864,8 +919,8 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     }
 
     @Override
-    public String toStringRequestOnly(Function<HttpHeaders, HttpHeaders> headersSanitizer,
-                                      Function<Object, Object> contentSanitizer) {
+    public String toStringRequestOnly(Function<? super HttpHeaders, ? extends HttpHeaders> headersSanitizer,
+                                      Function<Object, ?> contentSanitizer) {
         final int flags = this.flags & 0xFFFF; // Only interested in the bits related with request.
         if (requestStrFlags == flags) {
             return requestStr;
@@ -896,8 +951,6 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
                    .append(sessionProtocol.uriText());
             }
 
-            buf.append(", host=").append(host);
-
             if (isAvailable(flags, REQUEST_HEADERS)) {
                 buf.append(", headers=").append(headersSanitizer.apply(requestHeaders));
             }
@@ -920,8 +973,8 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
     }
 
     @Override
-    public String toStringResponseOnly(Function<HttpHeaders, HttpHeaders> headersSanitizer,
-                                       Function<Object, Object> contentSanitizer) {
+    public String toStringResponseOnly(Function<? super HttpHeaders, ? extends HttpHeaders> headersSanitizer,
+                                       Function<Object, ?> contentSanitizer) {
 
         final int flags = this.flags & 0xFFFF0000; // Only interested in the bits related with response.
         if (responseStrFlags == flags) {
@@ -958,6 +1011,14 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
         }
         buf.append('}');
 
+        final int numChildren = children != null ? children.size() : 0;
+        if (numChildren > 1) {
+            // Append only when there were retries which the numChildren is greater than 1.
+            buf.append(", {totalAttempts=");
+            buf.append(numChildren);
+            buf.append('}');
+        }
+
         responseStr = buf.toString();
         responseStrFlags = flags;
 
@@ -979,7 +1040,7 @@ public class DefaultRequestLog implements RequestLog, RequestLogBuilder {
             return TimeUnit.MILLISECONDS.toMicros(System.currentTimeMillis());
         } else {
             // Java 9+ support higher precision wall time.
-            Instant now = Clock.systemUTC().instant();
+            final Instant now = Clock.systemUTC().instant();
             return TimeUnit.SECONDS.toMicros(now.getEpochSecond()) + TimeUnit.NANOSECONDS.toMicros(
                     now.getNano());
         }

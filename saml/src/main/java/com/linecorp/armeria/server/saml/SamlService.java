@@ -157,12 +157,11 @@ final class SamlService implements ServiceWithPathMappings<HttpRequest, HttpResp
          */
         SamlParameters(AggregatedHttpMessage msg) {
             requireNonNull(msg, "msg");
-            final MediaType contentType = msg.headers().contentType();
+            final MediaType contentType = msg.contentType();
 
             final QueryStringDecoder decoder;
             if (contentType != null && contentType.belongsTo(MediaType.FORM_DATA)) {
-                final String query = msg.content().toString(
-                        contentType.charset().orElse(StandardCharsets.UTF_8));
+                final String query = msg.content(contentType.charset().orElse(StandardCharsets.UTF_8));
                 decoder = new QueryStringDecoder(query, false);
             } else {
                 final String path = msg.path();
@@ -178,7 +177,7 @@ final class SamlService implements ServiceWithPathMappings<HttpRequest, HttpResp
          *
          * @throws SamlException if a parameter with the specified {@code name} does not exist
          */
-        String getFirstValue(String name) throws SamlException {
+        String getFirstValue(String name) {
             final String value = getFirstValueOrNull(name);
             if (value == null) {
                 throw new SamlException("failed to get the value of a parameter: " + name);

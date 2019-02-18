@@ -15,12 +15,16 @@
  */
 package com.linecorp.armeria.server.annotation;
 
+import static com.linecorp.armeria.internal.ResponseConversionUtil.aggregateFrom;
 import static java.util.Objects.requireNonNull;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.stream.Stream;
 
 import javax.annotation.Nullable;
+
+import org.reactivestreams.Publisher;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,11 +33,17 @@ import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaders;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.common.util.Exceptions;
 import com.linecorp.armeria.server.ServiceRequestContext;
+import com.linecorp.armeria.server.streaming.JsonTextSequences;
 
 /**
  * A response converter implementation which creates an {@link HttpResponse} with
- * {@code content-type: application/json; charset=utf-8}.
+ * {@code content-type: application/json; charset=utf-8} or {@code content-type: application/json-seq}.
+ * The objects published from a {@link Publisher} or {@link Stream} would be converted into JSON Text Sequences
+ * if a {@link ProducesJsonSequences} annotation is specified on an annotated service method.
+ *
+ * @see <a href="https://tools.ietf.org/html/rfc7464">JavaScript Object Notation (JSON) Text Sequences</a>
  */
 public class JacksonResponseConverterFunction implements ResponseConverterFunction {
 
@@ -66,23 +76,47 @@ public class JacksonResponseConverterFunction implements ResponseConverterFuncti
             // Any MIME type which ends with '+json' such as 'application/json-patch+json' can be also accepted.
             if (mediaType.is(MediaType.JSON) || mediaType.subtype().endsWith("+json")) {
                 final Charset charset = mediaType.charset().orElse(StandardCharsets.UTF_8);
-
                 // Convert the object only if the charset supports UTF-8,
                 // because ObjectMapper always writes JSON document as UTF-8.
                 if (charset.contains(StandardCharsets.UTF_8)) {
-                    final HttpData content = HttpData.of(mapper.writeValueAsBytes(result));
-                    return HttpResponse.of(headers, content, trailingHeaders);
+                    if (result instanceof Publisher) {
+                        return aggregateFrom((Publisher<?>) result, headers, trailingHeaders,
+                                             this::toJsonHttpData);
+                    }
+                    if (result instanceof Stream) {
+                        return aggregateFrom((Stream<?>) result, headers, trailingHeaders,
+                                             this::toJsonHttpData, ctx.blockingTaskExecutor());
+                    }
+                    return HttpResponse.of(headers, toJsonHttpData(result), trailingHeaders);
                 }
+            }
+
+            // @Produces("application/json-seq") or @ProducesJsonSequences is specified.
+            if (mediaType.is(MediaType.JSON_SEQ)) {
+                if (result instanceof Publisher) {
+                    return JsonTextSequences.fromPublisher(headers, (Publisher<?>) result, trailingHeaders,
+                                                           mapper);
+                }
+                if (result instanceof Stream) {
+                    return JsonTextSequences.fromStream(headers, (Stream<?>) result, trailingHeaders,
+                                                        ctx.blockingTaskExecutor(), mapper);
+                }
+                return JsonTextSequences.fromObject(headers, result, trailingHeaders, mapper);
             }
         } else if (result instanceof JsonNode) {
             // No media type is specified, but the result is a JsonNode type.
-            final HttpHeaders responseHeaders =
-                    headers.isImmutable() ? HttpHeaders.copyOf(headers).contentType(MediaType.JSON_UTF_8)
-                                          : headers.contentType(MediaType.JSON_UTF_8);
-            final HttpData content = HttpData.of(mapper.writeValueAsBytes(result));
-            return HttpResponse.of(responseHeaders, content, trailingHeaders);
+            return HttpResponse.of(headers.toMutable().contentType(MediaType.JSON_UTF_8),
+                                   toJsonHttpData(result), trailingHeaders);
         }
 
         return ResponseConverterFunction.fallthrough();
+    }
+
+    private HttpData toJsonHttpData(@Nullable Object value) {
+        try {
+            return HttpData.of(mapper.writeValueAsBytes(value));
+        } catch (Exception e) {
+            return Exceptions.throwUnsafely(e);
+        }
     }
 }

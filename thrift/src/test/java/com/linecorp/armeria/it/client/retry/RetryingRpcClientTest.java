@@ -15,6 +15,7 @@
  */
 package com.linecorp.armeria.it.client.retry;
 
+import static com.linecorp.armeria.client.retry.RetryingClient.ARMERIA_RETRY_COUNT;
 import static com.linecorp.armeria.common.thrift.ThriftSerializationFormats.BINARY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -32,6 +33,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.thrift.TApplicationException;
 import org.junit.Rule;
@@ -40,7 +42,6 @@ import org.junit.Test;
 import com.linecorp.armeria.client.ClientBuilder;
 import com.linecorp.armeria.client.ClientFactory;
 import com.linecorp.armeria.client.ClientFactoryBuilder;
-import com.linecorp.armeria.client.ClosedClientFactoryException;
 import com.linecorp.armeria.client.retry.Backoff;
 import com.linecorp.armeria.client.retry.RetryStrategyWithContent;
 import com.linecorp.armeria.client.retry.RetryingRpcClient;
@@ -73,7 +74,15 @@ public class RetryingRpcClientTest {
     public final ServerRule server = new ServerRule() {
         @Override
         protected void configure(ServerBuilder sb) throws Exception {
-            sb.service("/thrift", THttpService.of(serviceHandler));
+            final AtomicInteger retryCount = new AtomicInteger();
+            sb.service("/thrift", THttpService.of(serviceHandler).decorate(
+                    (delegate, ctx, req) -> {
+                        final int count = retryCount.getAndIncrement();
+                        if (count != 0) {
+                            assertThat(count).isEqualTo(req.headers().getInt(ARMERIA_RETRY_COUNT));
+                        }
+                        return delegate.serve(ctx, req);
+                    }));
             sb.service("/thrift-devnull", THttpService.of(devNullServiceHandler));
         }
     };
@@ -168,7 +177,9 @@ public class RetryingRpcClientTest {
         // The next retry will be after 8 seconds so closing the factory after 3 seconds should work.
         Executors.newSingleThreadScheduledExecutor().schedule(factory::close, 3, TimeUnit.SECONDS);
         assertThatThrownBy(() -> client.hello("hello"))
-                .isInstanceOf(ClosedClientFactoryException.class);
+                .isInstanceOf(IllegalStateException.class)
+                .satisfies(cause -> assertThat(cause.getMessage()).matches(
+                        "(?i).*(factory has been closed|not accepting a task).*"));
     }
 
     @Test

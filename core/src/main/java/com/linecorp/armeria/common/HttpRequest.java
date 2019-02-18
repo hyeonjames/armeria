@@ -25,6 +25,8 @@ import java.util.Formatter;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 
+import javax.annotation.Nullable;
+
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 
@@ -87,11 +89,30 @@ public interface HttpRequest extends Request, StreamMessage<HttpObject> {
      * @param mediaType the {@link MediaType} of the request content
      * @param content the content of the request
      */
+    static HttpRequest of(HttpMethod method, String path, MediaType mediaType, CharSequence content) {
+        if (content instanceof String) {
+            return of(method, path, mediaType, (String) content);
+        }
+
+        requireNonNull(content, "content");
+        requireNonNull(mediaType, "mediaType");
+        return of(method, path, mediaType,
+                  HttpData.of(mediaType.charset().orElse(StandardCharsets.UTF_8), content));
+    }
+
+    /**
+     * Creates a new HTTP request and closes the stream.
+     *
+     * @param method the HTTP method of the request
+     * @param path the path of the request
+     * @param mediaType the {@link MediaType} of the request content
+     * @param content the content of the request
+     */
     static HttpRequest of(HttpMethod method, String path, MediaType mediaType, String content) {
         requireNonNull(content, "content");
         requireNonNull(mediaType, "mediaType");
-        return of(method, path,
-                  mediaType, content.getBytes(mediaType.charset().orElse(StandardCharsets.UTF_8)));
+        return of(method, path, mediaType,
+                  HttpData.of(mediaType.charset().orElse(StandardCharsets.UTF_8), content));
     }
 
     /**
@@ -107,11 +128,9 @@ public interface HttpRequest extends Request, StreamMessage<HttpObject> {
     static HttpRequest of(HttpMethod method, String path, MediaType mediaType, String format, Object... args) {
         requireNonNull(method, "method");
         requireNonNull(path, "path");
-        return of(method,
-                  path,
-                  mediaType,
-                  String.format(Locale.ENGLISH, format, args).getBytes(
-                          mediaType.charset().orElse(StandardCharsets.UTF_8)));
+        requireNonNull(mediaType, "mediaType");
+        return of(method, path, mediaType,
+                  HttpData.of(mediaType.charset().orElse(StandardCharsets.UTF_8), format, args));
     }
 
     /**
@@ -340,6 +359,23 @@ public interface HttpRequest extends Request, StreamMessage<HttpObject> {
     }
 
     /**
+     * Returns the value of the {@code 'content-type'} header.
+     * @return the valid header value if present. {@code null} otherwise.
+     */
+    @Nullable
+    default MediaType contentType() {
+        return headers().contentType();
+    }
+
+    /**
+     * Sets the {@link HttpHeaderNames#CONTENT_TYPE} header.
+     */
+    default HttpRequest contentType(MediaType mediaType) {
+        headers().contentType(mediaType);
+        return this;
+    }
+
+    /**
      * Aggregates this request. The returned {@link CompletableFuture} will be notified when the content and
      * the trailing headers of the request is received fully.
      */
@@ -368,7 +404,7 @@ public interface HttpRequest extends Request, StreamMessage<HttpObject> {
      * Aggregates this request. The returned {@link CompletableFuture} will be notified when the content and
      * the trailing headers of the request is received fully. {@link AggregatedHttpMessage#content()} will
      * return a pooled object, and the caller must ensure to release it. If you don't know what this means,
-     * use {@link HttpResponse#aggregate()}.
+     * use {@link #aggregate()}.
      */
     default CompletableFuture<AggregatedHttpMessage> aggregateWithPooledObjects(ByteBufAllocator alloc) {
         requireNonNull(alloc, "alloc");
@@ -383,7 +419,7 @@ public interface HttpRequest extends Request, StreamMessage<HttpObject> {
      * Aggregates this request. The returned {@link CompletableFuture} will be notified when the content and
      * the trailing headers of the request is received fully. {@link AggregatedHttpMessage#content()} will
      * return a pooled object, and the caller must ensure to release it. If you don't know what this means,
-     * use {@link HttpResponse#aggregate()}.
+     * use {@link #aggregate()}.
      */
     default CompletableFuture<AggregatedHttpMessage> aggregateWithPooledObjects(
             EventExecutor executor, ByteBufAllocator alloc) {

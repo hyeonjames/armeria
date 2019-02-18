@@ -21,9 +21,11 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 import java.util.Set;
+import java.util.concurrent.Executors;
 
 import javax.annotation.Nullable;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.protobuf.ByteString;
 
@@ -69,6 +71,8 @@ public final class GrpcServiceBuilder {
 
     private boolean enableUnframedRequests;
 
+    private boolean useBlockingTaskExecutor;
+
     private boolean unsafeWrapRequestBuffers;
 
     /**
@@ -86,6 +90,25 @@ public final class GrpcServiceBuilder {
      */
     public GrpcServiceBuilder addService(BindableService bindableService) {
         return addService(bindableService.bindService());
+    }
+
+    /**
+     * Adds gRPC {@link BindableService}s to this {@link GrpcServiceBuilder}. Most gRPC service
+     * implementations are {@link BindableService}s.
+     */
+    public GrpcServiceBuilder addServices(BindableService... bindableServices) {
+        requireNonNull(bindableServices, "bindableServices");
+        return addServices(ImmutableList.copyOf(bindableServices));
+    }
+
+    /**
+     * Adds gRPC {@link BindableService}s to this {@link GrpcServiceBuilder}. Most gRPC service
+     * implementations are {@link BindableService}s.
+     */
+    public GrpcServiceBuilder addServices(Iterable<BindableService> bindableServices) {
+        requireNonNull(bindableServices, "bindableServices");
+        bindableServices.forEach(this::addService);
+        return this;
     }
 
     /**
@@ -178,6 +201,17 @@ public final class GrpcServiceBuilder {
     }
 
     /**
+     * Sets whether the service executes service methods using the blocking executor. By default, service
+     * methods are executed directly on the event loop for implementing fully asynchronous services. If your
+     * service uses blocking logic, you should either execute such logic in a separate thread using something
+     * like {@link Executors#newCachedThreadPool()} or enable this setting.
+     */
+    public GrpcServiceBuilder useBlockingTaskExecutor(boolean useBlockingTaskExecutor) {
+        this.useBlockingTaskExecutor = useBlockingTaskExecutor;
+        return this;
+    }
+
+    /**
      * Enables unsafe retention of request buffers. Can improve performance when working with very large
      * (i.e., several megabytes) payloads.
      *
@@ -211,15 +245,16 @@ public final class GrpcServiceBuilder {
         final GrpcService grpcService = new GrpcService(
                 handlerRegistry,
                 handlerRegistry
-                      .methods()
-                      .keySet()
-                      .stream()
-                      .map(path -> PathMapping.ofExact('/' + path))
-                      .collect(ImmutableSet.toImmutableSet()),
+                        .methods()
+                        .keySet()
+                        .stream()
+                        .map(path -> PathMapping.ofExact('/' + path))
+                        .collect(ImmutableSet.toImmutableSet()),
                 firstNonNull(decompressorRegistry, DecompressorRegistry.getDefaultInstance()),
                 firstNonNull(compressorRegistry, CompressorRegistry.getDefaultInstance()),
                 supportedSerializationFormats,
                 maxOutboundMessageSizeBytes,
+                useBlockingTaskExecutor,
                 unsafeWrapRequestBuffers,
                 maxInboundMessageSizeBytes);
         return enableUnframedRequests ? grpcService.decorate(UnframedGrpcService::new) : grpcService;

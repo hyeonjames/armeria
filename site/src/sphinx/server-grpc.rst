@@ -144,8 +144,7 @@ you build a :api:`GrpcService`:
     Server server = sb.build();
     server.start();
 
-Please refer to `Cross-Origin Resource Sharing (CORS) <https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS>`_
-by MDN for more information.
+Please refer to :ref:`server-cors` for more information.
 
 Unframed requests
 -----------------
@@ -176,9 +175,11 @@ for JSON POST body.
 Blocking service implementation
 -------------------------------
 
-Unlike upstream gRPC-java, Armeria does not run service logic in a separate thread pool. If your service
-implementation requires blocking, either run the individual blocking logic in a thread pool, or just wrap the
-entire service implementation in ``RequestContext.current().blockingTaskExecutor().submit``
+Unlike upstream gRPC-java, Armeria does not run service logic in a separate thread pool by default. If your
+service implementation requires blocking, either run the individual blocking logic in a thread pool, wrap the
+entire service implementation in ``RequestContext.current().blockingTaskExecutor().submit``, or set
+``GrpcServiceBuilder.useBlockingTaskExecutor()`` so the above happens automatically for all service methods
+and lifecycle callbacks.
 
 .. code-block:: java
 
@@ -199,6 +200,31 @@ entire service implementation in ``RequestContext.current().blockingTaskExecutor
             });
         }
     }
+
+.. code-block:: java
+
+    import com.linecorp.armeria.common.RequestContext;
+    import com.linecorp.armeria.server.ServiceRequestContext;
+    import com.linecorp.armeria.server.grpc.GrpcServiceBuilder;
+
+    public class MyHelloService extends HelloServiceGrpc.HelloServiceImplBase {
+        @Override
+        public void hello(HelloRequest req, StreamObserver<HelloReply> responseObserver) {
+            Thread.sleep(10000);
+            HelloReply reply = HelloReply.newBuilder()
+                                         .setMessage("Hello, " + req.getName() + '!')
+                                         .build();
+            responseObserver.onNext(reply);
+            responseObserver.onCompleted();
+        }
+    }
+
+    ServerBuilder sb = new ServerBuilder();
+    sb.service(new GrpcServiceBuilder().addService(new MyHelloService())
+                                       // All service methods will be run within
+                                       // the blocking executor.
+                                       .useBlockingTaskExecutor(true)
+                                       .build());
 
 Exception propagation
 =====================

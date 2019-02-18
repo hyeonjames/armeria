@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 LINE Corporation
+ * Copyright 2019 LINE Corporation
  *
  * LINE Corporation licenses this file to you under the Apache License,
  * version 2.0 (the "License"); you may not use this file except in compliance
@@ -15,261 +15,79 @@
  */
 package com.linecorp.armeria.internal.annotation;
 
-import static com.google.common.base.MoreObjects.firstNonNull;
-import static com.linecorp.armeria.internal.annotation.AnnotatedValueResolver.addToFirstIfExists;
 import static java.util.Objects.requireNonNull;
-import static org.reflections.ReflectionUtils.getAllFields;
-import static org.reflections.ReflectionUtils.getAllMethods;
-import static org.reflections.ReflectionUtils.getConstructors;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
+import java.util.AbstractMap;
 import java.util.AbstractMap.SimpleImmutableEntry;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.ConcurrentMap;
-import java.util.function.Function;
 
-import javax.annotation.Nullable;
+import com.google.common.collect.ImmutableMap;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.google.common.base.MoreObjects;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSortedSet;
-import com.google.common.collect.MapMaker;
-
-import com.linecorp.armeria.internal.annotation.AnnotatedValueResolver.NoAnnotatedParameterException;
-import com.linecorp.armeria.internal.annotation.AnnotatedValueResolver.RequestObjectResolver;
+import com.linecorp.armeria.internal.annotation.AnnotatedBeanFactoryRegistry.BeanFactoryId;
 import com.linecorp.armeria.internal.annotation.AnnotatedValueResolver.ResolverContext;
-import com.linecorp.armeria.server.annotation.RequestConverter;
 
-/**
- * A singleton class which manages factories for creating a bean. {@link #register(Class, Set, List)} should
- * be called at first to let {@link AnnotatedBeanFactory} create a factory for a bean.
- */
-final class AnnotatedBeanFactory {
-    private static final Logger logger = LoggerFactory.getLogger(AnnotatedBeanFactory.class);
+final class AnnotatedBeanFactory<T> {
 
-    private static final Function<ResolverContext, ?> unsupportedBeanFactory = resolverContext -> null;
-    private static final ConcurrentMap<BeanFactoryId,
-            Function<ResolverContext, ?>> factories = new MapMaker().makeMap();
+    private final BeanFactoryId beanFactoryId;
+    private final Entry<Constructor<T>, List<AnnotatedValueResolver>> constructor;
+    private final Map<Field, AnnotatedValueResolver> fields;
+    private final Map<Method, List<AnnotatedValueResolver>> methods;
 
-    /**
-     * Returns a {@link BeanFactoryId} of the specified {@link Class} and {@code pathParams} for finding its
-     * factory from the factory cache later.
-     */
-    static synchronized BeanFactoryId register(Class<?> clazz, Set<String> pathParams,
-                                               List<RequestObjectResolver> objectResolvers) {
-        final BeanFactoryId beanFactoryId = new BeanFactoryId(clazz, pathParams);
-        if (!factories.containsKey(beanFactoryId)) {
-            factories.put(beanFactoryId,
-                          firstNonNull(createFactory(beanFactoryId, objectResolvers),
-                                       unsupportedBeanFactory));
-        }
-        return beanFactoryId;
+    AnnotatedBeanFactory(BeanFactoryId beanFactoryId,
+                         Entry<Constructor<T>, List<AnnotatedValueResolver>> constructor,
+                         Map<Method, List<AnnotatedValueResolver>> methods,
+                         Map<Field, AnnotatedValueResolver> fields) {
+        this.beanFactoryId = requireNonNull(beanFactoryId, "beanFactoryId");
+        this.constructor = immutableEntry(requireNonNull(constructor, "constructor"));
+        this.fields = ImmutableMap.copyOf(requireNonNull(fields, "fields"));
+        this.methods = ImmutableMap.copyOf(requireNonNull(methods, "methods"));
     }
 
-    /**
-     * Returns a factory of the specified {@link BeanFactoryId}.
-     */
-    static Optional<Function<ResolverContext, ?>> find(@Nullable BeanFactoryId beanFactoryId) {
-        if (beanFactoryId == null) {
-            return Optional.empty();
+    private static <K, V> Entry<K, V> immutableEntry(Entry<K, V> entry) {
+        if (entry instanceof AbstractMap.SimpleImmutableEntry) {
+            return entry;
         }
-        final Function<ResolverContext, ?> factory = factories.get(beanFactoryId);
-        return factory != null && factory != unsupportedBeanFactory ? Optional.of(factory)
-                                                                    : Optional.empty();
+        return new SimpleImmutableEntry<>(entry);
     }
 
-    @Nullable
-    private static <T> Function<ResolverContext, T> createFactory(BeanFactoryId beanFactoryId,
-                                                                  List<RequestObjectResolver> objectResolvers) {
-        requireNonNull(beanFactoryId, "beanFactoryId");
-        requireNonNull(objectResolvers, "objectResolvers");
+    T create(ResolverContext resolverContext) {
+        try {
+            final Object[] constructorArgs = AnnotatedValueResolver.toArguments(
+                    constructor.getValue(), resolverContext);
+            final T instance = constructor.getKey().newInstance(constructorArgs);
 
-        final int modifiers = beanFactoryId.type.getModifiers();
-        if (Modifier.isAbstract(modifiers) || Modifier.isInterface(modifiers)) {
-            // Only concrete classes can be handled.
-            return null;
-        }
-
-        // Support request converters which are specified for a bean class. e.g.
-        //
-        // @RequestConverter(BeanConverterA.class)
-        // @RequestConverter(BeanConverterB.class)
-        // class CompositeBean {
-        //     @RequestObject
-        //     BeanA a;
-        //     ...
-        // }
-        final List<RequestObjectResolver> resolvers = addToFirstIfExists(
-                objectResolvers, beanFactoryId.type.getAnnotationsByType(RequestConverter.class));
-
-        final Entry<Constructor<T>, List<AnnotatedValueResolver>> constructor =
-                findConstructor(beanFactoryId, resolvers);
-        if (constructor == null) {
-            // There is no constructor, so we cannot create a new instance.
-            return null;
-        }
-
-        final List<Entry<Field, AnnotatedValueResolver>> fields = findFields(beanFactoryId, resolvers);
-        final List<Entry<Method, List<AnnotatedValueResolver>>> methods = findMethods(beanFactoryId,
-                                                                                      resolvers);
-
-        if (constructor.getValue().isEmpty() && fields.isEmpty() && methods.isEmpty()) {
-            // A default constructor exists but there is no annotated field or method.
-            return null;
-        }
-
-        // Suppress Java language access checking.
-        constructor.getKey().setAccessible(true);
-        fields.forEach(field -> field.getKey().setAccessible(true));
-        methods.forEach(method -> method.getKey().setAccessible(true));
-
-        logger.debug("Registered a bean factory: {}", beanFactoryId);
-        return resolverContext -> {
-            try {
-                final Object[] constructorArgs = AnnotatedValueResolver.toArguments(
-                        constructor.getValue(), resolverContext);
-                final T instance = constructor.getKey().newInstance(constructorArgs);
-
-                for (final Entry<Field, AnnotatedValueResolver> field : fields) {
-                    final Object fieldArg = field.getValue().resolve(resolverContext);
-                    field.getKey().set(instance, fieldArg);
-                }
-
-                for (final Entry<Method, List<AnnotatedValueResolver>> method : methods) {
-                    final Object[] methodArgs = AnnotatedValueResolver.toArguments(
-                            method.getValue(), resolverContext);
-                    method.getKey().invoke(instance, methodArgs);
-                }
-
-                return instance;
-            } catch (Throwable cause) {
-                throw new IllegalArgumentException(
-                        "cannot instantiate a new object: " + beanFactoryId, cause);
+            for (final Entry<Method, List<AnnotatedValueResolver>> method : methods.entrySet()) {
+                final Object[] methodArgs = AnnotatedValueResolver.toArguments(
+                        method.getValue(), resolverContext);
+                method.getKey().invoke(instance, methodArgs);
             }
-        };
+
+            for (final Entry<Field, AnnotatedValueResolver> field : fields.entrySet()) {
+                final Object fieldArg = field.getValue().resolve(resolverContext);
+                field.getKey().set(instance, fieldArg);
+            }
+
+            return instance;
+        } catch (Throwable cause) {
+            throw new IllegalArgumentException(
+                    "cannot instantiate a new object: " + beanFactoryId, cause);
+        }
     }
 
-    @Nullable
-    @SuppressWarnings({ "unchecked", "rawtypes" })
-    private static <T> Entry<Constructor<T>, List<AnnotatedValueResolver>> findConstructor(
-            BeanFactoryId beanFactoryId, List<RequestObjectResolver> objectResolvers) {
-
-        Entry<Constructor<T>, List<AnnotatedValueResolver>> candidate = null;
-
-        final Set<Constructor> constructors = getConstructors(beanFactoryId.type);
-        for (final Constructor<T> constructor : constructors) {
-            // A default constructor can be a candidate only if there has been no candidate yet.
-            if (constructor.getParameterCount() == 0 && candidate == null) {
-                candidate = new SimpleImmutableEntry<>(constructor, ImmutableList.of());
-                continue;
-            }
-
-            try {
-                final RequestConverter[] converters = constructor.getAnnotationsByType(RequestConverter.class);
-                final List<AnnotatedValueResolver> resolvers =
-                        AnnotatedValueResolver.ofBeanConstructorOrMethod(
-                                constructor, beanFactoryId.pathParams,
-                                addToFirstIfExists(objectResolvers, converters));
-                if (!resolvers.isEmpty()) {
-                    // Can overwrite only if the current candidate is a default constructor.
-                    if (candidate == null || candidate.getValue().isEmpty()) {
-                        candidate = new SimpleImmutableEntry<>(constructor, resolvers);
-                    } else {
-                        throw new IllegalArgumentException(
-                                "too many annotated constructors in " + beanFactoryId.type.getSimpleName() +
-                                " (expected: 0 or 1)");
-                    }
-                }
-            } catch (NoAnnotatedParameterException ignored) {
-                // There's no annotated parameters in the constructor.
-            }
-        }
-        return candidate;
+    Entry<Constructor<T>, List<AnnotatedValueResolver>> constructor() {
+        return constructor;
     }
 
-    private static List<Entry<Field, AnnotatedValueResolver>> findFields(
-            BeanFactoryId beanFactoryId, List<RequestObjectResolver> objectResolvers) {
-        final List<Entry<Field, AnnotatedValueResolver>> ret = new ArrayList<>();
-        final Set<Field> fields = getAllFields(beanFactoryId.type);
-        for (final Field field : fields) {
-            final RequestConverter[] converters = field.getAnnotationsByType(RequestConverter.class);
-            AnnotatedValueResolver.ofBeanField(field, beanFactoryId.pathParams,
-                                               addToFirstIfExists(objectResolvers, converters))
-                                  .ifPresent(resolver -> ret.add(new SimpleImmutableEntry<>(field, resolver)));
-        }
-        return ret;
+    Map<Method, List<AnnotatedValueResolver>> methods() {
+        return methods;
     }
 
-    private static List<Entry<Method, List<AnnotatedValueResolver>>> findMethods(
-            BeanFactoryId beanFactoryId, List<RequestObjectResolver> objectResolvers) {
-        final List<Entry<Method, List<AnnotatedValueResolver>>> ret = new ArrayList<>();
-        final Set<Method> methods = getAllMethods(beanFactoryId.type);
-        for (final Method method : methods) {
-            final RequestConverter[] converters = method.getAnnotationsByType(RequestConverter.class);
-            try {
-                final List<AnnotatedValueResolver> resolvers =
-                        AnnotatedValueResolver.ofBeanConstructorOrMethod(
-                                method, beanFactoryId.pathParams,
-                                addToFirstIfExists(objectResolvers, converters));
-                if (!resolvers.isEmpty()) {
-                    ret.add(new SimpleImmutableEntry<>(method, resolvers));
-                }
-            } catch (NoAnnotatedParameterException ignored) {
-                // There's no annotated parameters in the method.
-            }
-        }
-        return ret;
-    }
-
-    private AnnotatedBeanFactory() {}
-
-    /**
-     * An identifier of the registered bean factory.
-     */
-    static final class BeanFactoryId {
-        private final Class<?> type;
-        private final Set<String> pathParams;
-
-        private BeanFactoryId(Class<?> type, Set<String> pathParams) {
-            this.type = type;
-            this.pathParams = ImmutableSortedSet.copyOf(pathParams);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || o.getClass() != getClass()) {
-                return false;
-            }
-            final BeanFactoryId that = (BeanFactoryId) o;
-            return type == that.type &&
-                   pathParams.equals(that.pathParams);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(type, pathParams);
-        }
-
-        @Override
-        public String toString() {
-            return MoreObjects.toStringHelper(this)
-                              .add("type", type.getName())
-                              .add("pathParams", pathParams)
-                              .toString();
-        }
+    Map<Field, AnnotatedValueResolver> fields() {
+        return fields;
     }
 }

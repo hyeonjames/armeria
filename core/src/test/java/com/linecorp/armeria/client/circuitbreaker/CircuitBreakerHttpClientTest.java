@@ -16,7 +16,6 @@
 
 package com.linecorp.armeria.client.circuitbreaker;
 
-import static com.linecorp.armeria.common.SessionProtocol.H2C;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
@@ -36,9 +35,8 @@ import org.junit.Test;
 import com.google.common.testing.FakeTicker;
 
 import com.linecorp.armeria.client.Client;
-import com.linecorp.armeria.client.ClientOptions;
 import com.linecorp.armeria.client.ClientRequestContext;
-import com.linecorp.armeria.client.DefaultClientRequestContext;
+import com.linecorp.armeria.client.ClientRequestContextBuilder;
 import com.linecorp.armeria.client.Endpoint;
 import com.linecorp.armeria.client.HttpClient;
 import com.linecorp.armeria.client.HttpClientBuilder;
@@ -47,20 +45,17 @@ import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.HttpStatusClass;
-import com.linecorp.armeria.common.metric.NoopMeterRegistry;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.testing.server.ServerRule;
-
-import io.netty.channel.DefaultEventLoop;
 
 public class CircuitBreakerHttpClientTest {
 
     private static final String remoteServiceName = "testService";
 
-    private static final ClientRequestContext ctx = new DefaultClientRequestContext(
-            new DefaultEventLoop(), NoopMeterRegistry.get(), H2C,
-            Endpoint.of("dummyhost", 8080),
-            HttpMethod.GET, "/", null, null, ClientOptions.DEFAULT, mock(HttpRequest.class));
+    private static final ClientRequestContext ctx =
+            ClientRequestContextBuilder.of(HttpRequest.of(HttpMethod.GET, "/"))
+                                       .endpoint(Endpoint.of("dummyhost", 8080))
+                                       .build();
 
     @ClassRule
     public static final ServerRule server = new ServerRule() {
@@ -122,21 +117,20 @@ public class CircuitBreakerHttpClientTest {
     }
 
     @Test
-    public void strategyWithoutContent() throws Exception {
+    public void strategyWithoutContent() {
         final CircuitBreakerStrategy strategy = CircuitBreakerStrategy.onServerErrorStatus();
         circuitBreakerIsOpenOnServerError(new CircuitBreakerHttpClientBuilder(strategy));
     }
 
     @Test
-    public void strategyWithContent() throws Exception {
+    public void strategyWithContent() {
         final CircuitBreakerStrategyWithContent<HttpResponse> strategy =
                 (ctx, response) -> response.aggregate().handle(
                         (msg, unused1) -> msg.status().codeClass() != HttpStatusClass.SERVER_ERROR);
         circuitBreakerIsOpenOnServerError(new CircuitBreakerHttpClientBuilder(strategy));
     }
 
-    private static void circuitBreakerIsOpenOnServerError(CircuitBreakerHttpClientBuilder builder)
-            throws Exception {
+    private static void circuitBreakerIsOpenOnServerError(CircuitBreakerHttpClientBuilder builder) {
         final FakeTicker ticker = new FakeTicker();
         final int minimumRequestThreshold = 2;
         final Duration circuitOpenWindow = Duration.ofSeconds(60);
@@ -149,27 +143,28 @@ public class CircuitBreakerHttpClientTest {
                 .counterSlidingWindow(counterSlidingWindow)
                 .counterUpdateInterval(counterUpdateInterval)
                 .ticker(ticker)
+                .listener(new CircuitBreakerListenerAdapter() {
+                    @Override
+                    public void onEventCountUpdated(String circuitBreakerName, EventCount eventCount)
+                            throws Exception {
+                        ticker.advance(Duration.ofMillis(1).toNanos());
+                    }
+                })
                 .build();
-
-        @SuppressWarnings("unchecked")
-        final Client<HttpRequest, HttpResponse> delegate = mock(Client.class);
-        when(delegate.execute(any(), any())).thenReturn(HttpResponse.of(503))
-                                            .thenReturn(HttpResponse.of(503))
-                                            .thenReturn(HttpResponse.of(503))
-                                            .thenReturn(HttpResponse.of(503));
 
         final CircuitBreakerMapping mapping = (ctx, req) -> circuitBreaker;
         final HttpClient client = new HttpClientBuilder(server.uri("/"))
                 .decorator(builder.circuitBreakerMapping(mapping).newDecorator())
                 .build();
 
+        ticker.advance(Duration.ofMillis(1).toNanos());
         // CLOSED
         for (int i = 0; i < minimumRequestThreshold + 1; i++) {
             // Need to call execute() one more to change the state of the circuit breaker.
-
-            assertThat(client.get("/unavailable").aggregate().join().headers().status())
+            final long currentTime = ticker.read();
+            assertThat(client.get("/unavailable").aggregate().join().status())
                     .isSameAs(HttpStatus.SERVICE_UNAVAILABLE);
-            ticker.advance(Duration.ofMillis(1).toNanos());
+            await().until(() -> currentTime != ticker.read());
         }
 
         await().untilAsserted(() -> assertThat(circuitBreaker.canRequest()).isFalse());

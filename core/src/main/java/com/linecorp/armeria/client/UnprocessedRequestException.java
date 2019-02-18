@@ -17,7 +17,6 @@
 package com.linecorp.armeria.client;
 
 import com.linecorp.armeria.common.Flags;
-import com.linecorp.armeria.common.util.Exceptions;
 
 /**
  * A {@link RuntimeException} raised when it is certain that a request has not been handled by a server and
@@ -30,19 +29,19 @@ public final class UnprocessedRequestException extends RuntimeException {
 
     private static final long serialVersionUID = 4679512839715213302L;
 
-    private static final UnprocessedRequestException INSTANCE =
-            Exceptions.clearTrace(new UnprocessedRequestException());
+    private static final UnprocessedRequestException INSTANCE = new UnprocessedRequestException(false);
 
     /**
-     * Returns a {@link UnprocessedRequestException} which may be a singleton or a new instance, depending on
+     * Returns an {@link UnprocessedRequestException} which may be a singleton or a new instance, depending on
      * whether {@linkplain Flags#verboseExceptions() the verbose exception mode} is enabled.
      */
     public static UnprocessedRequestException get() {
         return Flags.verboseExceptions() ? new UnprocessedRequestException() : INSTANCE;
     }
 
-    /**
-     * Creates a new instance.
-     */
     private UnprocessedRequestException() {}
+
+    private UnprocessedRequestException(@SuppressWarnings("unused") boolean dummy) {
+        super(null, null, false, false);
+    }
 }

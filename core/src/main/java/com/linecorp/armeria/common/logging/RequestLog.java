@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.function.Function;
 
 import javax.annotation.Nullable;
+import javax.net.ssl.SSLSession;
 
 import com.linecorp.armeria.client.ClientRequestContext;
 import com.linecorp.armeria.common.HttpHeaders;
@@ -334,6 +335,15 @@ public interface RequestLog {
     Channel channel();
 
     /**
+     * Returns the {@link SSLSession} of the connection which handled the {@link Request}.
+     *
+     * @return the {@link SSLSession}, or {@code null} if the {@link Request} has failed even before
+     *         a TLS connection is established.
+     */
+    @Nullable
+    SSLSession sslSession();
+
+    /**
      * Returns the {@link SessionProtocol} of the {@link Request}.
      *
      * @throws RequestLogAvailabilityException if this property is not available yet
@@ -486,8 +496,8 @@ public interface RequestLog {
      * @param contentSanitizer a {@link Function} for sanitizing request content for logging. The result of the
      *     {@link Function} is what is actually logged as content.
      */
-    String toStringRequestOnly(Function<HttpHeaders, HttpHeaders> headersSanitizer,
-                               Function<Object, Object> contentSanitizer);
+    String toStringRequestOnly(Function<? super HttpHeaders, ? extends HttpHeaders> headersSanitizer,
+                               Function<Object, ?> contentSanitizer);
 
     /**
      * Returns the string representation of the {@link Response}, with no sanitization of headers or content.
@@ -502,6 +512,6 @@ public interface RequestLog {
      * @param contentSanitizer a {@link Function} for sanitizing response content for logging. The result of the
      *     {@link Function} is what is actually logged as content.
      */
-    String toStringResponseOnly(Function<HttpHeaders, HttpHeaders> headersSanitizer,
-                                Function<Object, Object> contentSanitizer);
+    String toStringResponseOnly(Function<? super HttpHeaders, ? extends HttpHeaders> headersSanitizer,
+                                Function<Object, ?> contentSanitizer);
 }

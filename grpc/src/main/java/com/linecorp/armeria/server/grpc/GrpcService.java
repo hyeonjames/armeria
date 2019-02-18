@@ -36,6 +36,7 @@ import com.linecorp.armeria.common.HttpResponseWriter;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.SerializationFormat;
+import com.linecorp.armeria.common.grpc.GrpcSerializationFormats;
 import com.linecorp.armeria.common.util.SafeCloseable;
 import com.linecorp.armeria.internal.grpc.GrpcHeaderNames;
 import com.linecorp.armeria.internal.grpc.GrpcJsonUtil;
@@ -86,8 +87,9 @@ public final class GrpcService extends AbstractHttpService
     private final DecompressorRegistry decompressorRegistry;
     private final CompressorRegistry compressorRegistry;
     private final Set<SerializationFormat> supportedSerializationFormats;
-    private final MessageMarshaller jsonMarshaller;
+    @Nullable private final MessageMarshaller jsonMarshaller;
     private final int maxOutboundMessageSizeBytes;
+    private final boolean useBlockingTaskExecutor;
     private final boolean unsafeWrapRequestBuffers;
     private final String advertisedEncodingsHeader;
 
@@ -99,6 +101,7 @@ public final class GrpcService extends AbstractHttpService
                 CompressorRegistry compressorRegistry,
                 Set<SerializationFormat> supportedSerializationFormats,
                 int maxOutboundMessageSizeBytes,
+                boolean useBlockingTaskExecutor,
                 boolean unsafeWrapRequestBuffers,
                 int maxInboundMessageSizeBytes) {
         this.registry = requireNonNull(registry, "registry");
@@ -106,8 +109,9 @@ public final class GrpcService extends AbstractHttpService
         this.decompressorRegistry = requireNonNull(decompressorRegistry, "decompressorRegistry");
         this.compressorRegistry = requireNonNull(compressorRegistry, "compressorRegistry");
         this.supportedSerializationFormats = supportedSerializationFormats;
-        jsonMarshaller = jsonMarshaller(registry);
+        jsonMarshaller = jsonMarshaller(registry, supportedSerializationFormats);
         this.maxOutboundMessageSizeBytes = maxOutboundMessageSizeBytes;
+        this.useBlockingTaskExecutor = useBlockingTaskExecutor;
         this.unsafeWrapRequestBuffers = unsafeWrapRequestBuffers;
         this.maxInboundMessageSizeBytes = maxInboundMessageSizeBytes;
 
@@ -116,7 +120,7 @@ public final class GrpcService extends AbstractHttpService
 
     @Override
     protected HttpResponse doPost(ServiceRequestContext ctx, HttpRequest req) throws Exception {
-        final MediaType contentType = req.headers().contentType();
+        final MediaType contentType = req.contentType();
         final SerializationFormat serializationFormat = findSerializationFormat(contentType);
         if (serializationFormat == null) {
             return HttpResponse.of(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
@@ -186,6 +190,7 @@ public final class GrpcService extends AbstractHttpService
                 serializationFormat,
                 jsonMarshaller,
                 unsafeWrapRequestBuffers,
+                useBlockingTaskExecutor,
                 advertisedEncodingsHeader);
         final ServerCall.Listener<I> listener;
         try (SafeCloseable ignored = ctx.push()) {
@@ -209,9 +214,10 @@ public final class GrpcService extends AbstractHttpService
     }
 
     @Override
-    public void serviceAdded(ServiceConfig cfg) throws Exception {
+    public void serviceAdded(ServiceConfig cfg) {
         if (maxInboundMessageSizeBytes == NO_MAX_INBOUND_MESSAGE_SIZE) {
-            maxInboundMessageSizeBytes = (int) cfg.server().config().defaultMaxRequestLength();
+            maxInboundMessageSizeBytes = (int) Math.min(cfg.server().config().defaultMaxRequestLength(),
+                                                        Integer.MAX_VALUE);
         }
     }
 
@@ -244,7 +250,12 @@ public final class GrpcService extends AbstractHttpService
         return null;
     }
 
-    private static MessageMarshaller jsonMarshaller(HandlerRegistry registry) {
+    @Nullable
+    private static MessageMarshaller jsonMarshaller(HandlerRegistry registry,
+                                                    Set<SerializationFormat> supportedSerializationFormats) {
+        if (supportedSerializationFormats.stream().noneMatch(GrpcSerializationFormats::isJson)) {
+            return null;
+        }
         final List<MethodDescriptor<?, ?>> methods =
                 registry.services().stream()
                         .flatMap(service -> service.getMethods().stream())

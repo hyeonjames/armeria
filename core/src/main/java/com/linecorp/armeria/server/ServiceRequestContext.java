@@ -37,6 +37,7 @@ import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.Request;
 import com.linecorp.armeria.common.RequestContext;
+import com.linecorp.armeria.common.Response;
 
 import io.netty.handler.codec.Headers;
 import io.netty.util.AsciiString;
@@ -46,6 +47,18 @@ import io.netty.util.AsciiString;
  * {@link ServiceRequestContext} instance.
  */
 public interface ServiceRequestContext extends RequestContext {
+
+    /**
+     * Returns a new {@link ServiceRequestContext} created from the specified {@link HttpRequest}.
+     * Note that it is not usually required to create a new context by yourself, because Armeria
+     * will always provide a context object for you. However, it may be useful in some cases such as
+     * unit testing.
+     *
+     * @see ServiceRequestContextBuilder
+     */
+    static ServiceRequestContext of(HttpRequest request) {
+        return ServiceRequestContextBuilder.of(request).build();
+    }
 
     /**
      * Returns the remote address of this request.
@@ -166,19 +179,22 @@ public interface ServiceRequestContext extends RequestContext {
     Logger logger();
 
     /**
-     * Returns the amount of time allowed until receiving the current {@link Request} completely.
+     * Returns the amount of time allowed until receiving the current {@link Request} and sending
+     * the corresponding {@link Response} completely.
      * This value is initially set from {@link ServerConfig#defaultRequestTimeoutMillis()}.
      */
     long requestTimeoutMillis();
 
     /**
-     * Sets the amount of time allowed until receiving the current {@link Request} completely.
+     * Sets the amount of time allowed until receiving the current {@link Request} and sending
+     * the corresponding {@link Response} completely.
      * This value is initially set from {@link ServerConfig#defaultRequestTimeoutMillis()}.
      */
     void setRequestTimeoutMillis(long requestTimeoutMillis);
 
     /**
-     * Sets the amount of time allowed until receiving the current {@link Request} completely.
+     * Sets the amount of time allowed until receiving the current {@link Request} and sending
+     * the corresponding {@link Response} completely.
      * This value is initially set from {@link ServerConfig#defaultRequestTimeoutMillis()}.
      */
     void setRequestTimeout(Duration requestTimeout);
@@ -199,6 +215,13 @@ public interface ServiceRequestContext extends RequestContext {
      * }</pre>
      */
     void setRequestTimeoutHandler(Runnable requestTimeoutHandler);
+
+    /**
+     * Returns whether this {@link ServiceRequestContext} has been timed-out (e.g., when the
+     * corresponding request passes a deadline).
+     */
+    @Override
+    boolean isTimedOut();
 
     /**
      * Returns the maximum length of the current {@link Request}.

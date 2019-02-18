@@ -17,12 +17,8 @@ package com.linecorp.armeria.server;
 
 import static java.util.Objects.requireNonNull;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
 import com.linecorp.armeria.common.Flags;
 import com.linecorp.armeria.common.HttpStatus;
-import com.linecorp.armeria.common.util.Exceptions;
 
 /**
  * A {@link RuntimeException} that is raised to send a simplistic HTTP response with minimal content
@@ -32,13 +28,28 @@ import com.linecorp.armeria.common.util.Exceptions;
  */
 public final class HttpStatusException extends RuntimeException {
 
-    private static final Map<Integer, HttpStatusException> EXCEPTIONS = new ConcurrentHashMap<>();
+    private static final HttpStatusException[] EXCEPTIONS = new HttpStatusException[1000];
+
+    static {
+        for (int i = 0; i < EXCEPTIONS.length; i++) {
+            EXCEPTIONS[i] = new HttpStatusException(HttpStatus.valueOf(i), false);
+        }
+    }
 
     /**
      * Returns a new {@link HttpStatusException} instance with the specified HTTP status code.
      */
     public static HttpStatusException of(int statusCode) {
-        return of(HttpStatus.valueOf(statusCode));
+        if (statusCode < 0 || statusCode >= 1000) {
+            final HttpStatus status = HttpStatus.valueOf(statusCode);
+            if (Flags.verboseExceptions()) {
+                return new HttpStatusException(status);
+            } else {
+                return new HttpStatusException(status, false);
+            }
+        } else {
+            return EXCEPTIONS[statusCode];
+        }
     }
 
     /**
@@ -46,13 +57,7 @@ public final class HttpStatusException extends RuntimeException {
      */
     public static HttpStatusException of(HttpStatus httpStatus) {
         requireNonNull(httpStatus, "httpStatus");
-        if (Flags.verboseExceptions()) {
-            return new HttpStatusException(httpStatus);
-        } else {
-            final int statusCode = httpStatus.code();
-            return EXCEPTIONS.computeIfAbsent(statusCode, code ->
-                    Exceptions.clearTrace(new HttpStatusException(HttpStatus.valueOf(code))));
-        }
+        return of(httpStatus.code());
     }
 
     private static final long serialVersionUID = 3341744805097308847L;
@@ -68,18 +73,18 @@ public final class HttpStatusException extends RuntimeException {
     }
 
     /**
+     * Creates a new singleton instance with the specified {@link HttpStatus}.
+     */
+    private HttpStatusException(HttpStatus httpStatus, @SuppressWarnings("unused") boolean dummy) {
+        super(requireNonNull(httpStatus, "httpStatus").toString(), null, false, false);
+        this.httpStatus = httpStatus;
+    }
+
+    /**
      * Returns the {@link HttpStatus} which would be sent back to the client who sent the
      * corresponding request.
      */
     public HttpStatus httpStatus() {
         return httpStatus;
-    }
-
-    @Override
-    public Throwable fillInStackTrace() {
-        if (Flags.verboseExceptions()) {
-            return super.fillInStackTrace();
-        }
-        return this;
     }
 }

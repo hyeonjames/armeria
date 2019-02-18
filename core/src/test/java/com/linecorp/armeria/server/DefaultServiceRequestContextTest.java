@@ -17,40 +17,37 @@
 package com.linecorp.armeria.server;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 import org.junit.Test;
-
-import com.google.common.collect.ImmutableList;
 
 import com.linecorp.armeria.common.DefaultHttpHeaders;
 import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
-import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.Request;
-import com.linecorp.armeria.common.SessionProtocol;
-import com.linecorp.armeria.common.metric.NoopMeterRegistry;
 
-import io.netty.channel.Channel;
 import io.netty.util.AttributeKey;
-import io.netty.util.NetUtil;
 
 public class DefaultServiceRequestContextTest {
 
     @Test
-    public void deriveContext() {
-        final VirtualHost virtualHost = virtualHost();
-        final DefaultPathMappingContext mappingCtx = new DefaultPathMappingContext(
-                virtualHost, "example.com", HttpMethod.GET, "/hello", null, MediaType.JSON_UTF_8,
-                ImmutableList.of(MediaType.JSON_UTF_8, MediaType.XML_UTF_8));
+    public void requestTimedOut() {
+        final HttpRequest request = HttpRequest.of(HttpMethod.GET, "/hello");
+        final ServiceRequestContext ctx = ServiceRequestContextBuilder.of(request).build();
+        assertThat(ctx.isTimedOut()).isFalse();
 
-        final ServiceRequestContext originalCtx = new DefaultServiceRequestContext(
-                virtualHost.serviceConfigs().get(0), mock(Channel.class), NoopMeterRegistry.get(),
-                SessionProtocol.H2,
-                mappingCtx, PathMappingResult.of("/foo"),
-                mock(Request.class), null, null, NetUtil.LOCALHOST4);
+        assert ctx instanceof DefaultServiceRequestContext;
+        final DefaultServiceRequestContext defaultCtx = (DefaultServiceRequestContext) ctx;
+        defaultCtx.setTimedOut();
+
+        assertThat(ctx.isTimedOut()).isTrue();
+    }
+
+    @Test
+    public void deriveContext() {
+        final HttpRequest request = HttpRequest.of(HttpMethod.GET, "/hello");
+        final ServiceRequestContext originalCtx = ServiceRequestContextBuilder.of(request).build();
 
         setAdditionalHeaders(originalCtx);
         setAdditionalTrailers(originalCtx);
@@ -58,7 +55,7 @@ public class DefaultServiceRequestContextTest {
         final AttributeKey<String> foo = AttributeKey.valueOf(DefaultServiceRequestContextTest.class, "foo");
         originalCtx.attr(foo).set("foo");
 
-        final Request newRequest = mock(Request.class);
+        final HttpRequest newRequest = HttpRequest.of(HttpMethod.GET, "/derived/hello");
         final ServiceRequestContext derivedCtx = originalCtx.newDerivedContext(newRequest);
         assertThat(derivedCtx.server()).isSameAs(originalCtx.server());
         assertThat(derivedCtx.sessionProtocol()).isSameAs(originalCtx.sessionProtocol());
@@ -94,14 +91,6 @@ public class DefaultServiceRequestContextTest {
 
         // the Attribute added to the original context after creation is not propagated to the derived context
         assertThat(derivedCtx.attr(bar).get()).isEqualTo(null);
-    }
-
-    private static VirtualHost virtualHost() {
-        final HttpService service = mock(HttpService.class);
-        final Server server = new ServerBuilder().withVirtualHost("example.com")
-                                                 .serviceUnder("/", service)
-                                                 .and().build();
-        return server.config().findVirtualHost("example.com");
     }
 
     private static void setAdditionalHeaders(ServiceRequestContext originalCtx) {
